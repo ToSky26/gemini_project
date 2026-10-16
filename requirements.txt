@@ -2,3 +2,4 @@ requests
 PyMuPDF
 google-genai
 python-dotenv
+openpyxl
