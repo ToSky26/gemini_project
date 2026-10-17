@@ -1,33 +1,38 @@
-from pathlib import Path
-
-import fitz
+import re
 import requests
 
-PDF_URL = 'https://alexlarin.net/ege/2026/trvar542.pdf'
-PROJECT_DIR = Path(__file__).resolve().parent.parent
-PDF_PATH = PROJECT_DIR / 'data' / 'raw' / 'trvar542.pdf'
+from urllib.parse import urljoin
+from constants import SOURCE_URL, PDF_DIR, PDF_PATH
+
+
+def create_folders():
+    PDF_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def download_pdf():
-    PDF_PATH.parent.mkdir(parents=True, exist_ok=True)
+    create_folders()
+    print('Загружаю страницу варианта...')
 
-    print('Начинаем скачивание PDF...')
-    response = requests.get(PDF_URL, timeout=30)
+    response = requests.get(SOURCE_URL, timeout=30)
     response.raise_for_status()
-    if not response.content.startswith(b'%PDF-'):
-        raise ValueError('Скачанный файл не PDF')
 
-    PDF_PATH.write_bytes(response.content)
-    print(f'Файл сохранён: {PDF_PATH}')
-    print(f'Размер файла: {PDF_PATH.stat().st_size} байт')
+    pdf_links = re.findall(
+        r'''href\s*=\s*["']([^"']+\.pdf(?:\?[^"']*)?)["']''',
+        response.text, flags=re.IGNORECASE
+    )
 
-    with fitz.open(PDF_PATH) as document:
-        print(f'Количество страниц: {len(document)}')
+    if not pdf_links:
+        raise ValueError('Ссылка на PDF не найдена.')
 
-        if len(document) == 0:
-            raise ValueError('PDF не содержит страниц')
-        print('PDF успешно открыт через PyMuPDF')
+    pdf_url = urljoin(SOURCE_URL, pdf_links[0])
+    print('Скачиваю PDF:', pdf_url)
 
+    pdf_response = requests.get(pdf_url, timeout=60)
+    pdf_response.raise_for_status()
 
-if __name__ == '__main__':
-    download_pdf()
+    if not pdf_response.content.startswith(b'%PDF'):
+        raise ValueError('Скачанный файл не является PDF.')
+
+    PDF_PATH.write_bytes(pdf_response.content)
+    print('PDF сохранён:', PDF_PATH)
+    return PDF_PATH

@@ -1,20 +1,21 @@
-import os
-from google import genai
+from parser.download_pdf import download_pdf
+from parser.extract_images import parse_pdf
+from parser.excel_export import create_excel
+from parser.archiver import create_zip
 
-# Вставьте ваш API-ключ сюда (или добавьте его в Секреты Colab слева в меню "Ключик")
-from dotenv import load_dotenv
 
-load_dotenv()
+def main():
+    '''Запускает все этапы обработки варианта.'''
+    pdf_path = download_pdf()
 
-API_KEY = os.getenv("GEMINI_API_KEY")
+    tasks = parse_pdf(pdf_path)
 
-# Инициализируем клиента
-client = genai.Client(api_key=API_KEY)
+    create_excel(tasks)
 
-# Делаем базовый запрос к Gemini 2.5 Flash
-response = client.models.generate_content(
-    model="gemini-3.5-flash",
-    contents="Напиши ровно фразами: 'Привет, мир! Я на связи.' и пару слов от себя.",
-)
+    create_zip()
 
-print(response.text)
+    print('Обработка завершена!')
+
+
+if __name__ == '__main__':
+    main()
