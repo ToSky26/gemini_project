@@ -18,9 +18,20 @@ if not api_key:
 client = genai.Client(api_key=api_key)
 
 
+def repair_latex(value):
+    if not isinstance(value, str):
+        return value
+
+    value = value.replace('\x0crac{', r'\frac{')
+    value = value.replace('\times', r'\times')
+    value = value.replace('\times', r'\times')
+    value = value.replace('\t' + 'imes', r'\times')
+    return value
+
+
 def solve_task(task_num, condition):
     prompt = f'''
-Ты — эксперт по профильной математике ЕГЭ.
+Ты — эксперт по профильной математике.
 
 Реши задание номер {task_num}.
 
@@ -77,6 +88,9 @@ def solve_task(task_num, condition):
             time.sleep(wait_seconds)
 
     result = json.loads(response.text)
+
+    for key in ('condition', 'solution', 'answer'):
+        result[key] = repair_latex(result.get(key, ''))
     return result
 
 
