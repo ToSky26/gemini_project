@@ -3,3 +3,5 @@ PyMuPDF
 google-genai
 python-dotenv
 openpyxl
+pillow
+playwright

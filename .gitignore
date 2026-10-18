@@ -8,9 +8,7 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-data/raw/*.pdf
-data/raw/*.txt
-data/raw/*.json
+data/
 tasks.xlsx
 images/
 result.zip
