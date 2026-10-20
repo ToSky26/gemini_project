@@ -6,8 +6,13 @@ import time
 from dotenv import load_dotenv
 from google import genai
 
-from constants import (MODEL_NAME, CACHE_PATH, MAX_RETRIES,
-                       MAX_QUOTA_WAIT_SECONDS, DEFAULT_RETRY_SECONDS)
+from constants import (
+    MODEL_NAME,
+    CACHE_PATH,
+    MAX_RETRIES,
+    MAX_QUOTA_WAIT_SECONDS,
+    DEFAULT_RETRY_SECONDS,
+)
 
 
 class QuotaWaitTooLong(Exception):
@@ -17,6 +22,7 @@ class QuotaWaitTooLong(Exception):
 load_dotenv()
 
 api_key = os.getenv('GEMINI_API_KEY')
+
 if not api_key:
     raise ValueError('Добавь GEMINI_API_KEY в файл .env')
 
@@ -41,20 +47,33 @@ def load_cache():
 
 def save_cache():
     CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CACHE_PATH.write_text(
+
+    temp_path = CACHE_PATH.with_suffix('.tmp')
+    temp_path.write_text(
         json.dumps(latex_cache, ensure_ascii=False, indent=4),
-        encoding='utf-8'
+        encoding='utf-8',
     )
+    temp_path.replace(CACHE_PATH)
 
 
 def is_quota_error(error_text):
+    error_text = error_text.upper()
     return '429' in error_text or 'RESOURCE_EXHAUSTED' in error_text
 
 
 def is_temporary_error(error_text):
+    error_text = error_text.upper()
+
     return any(
-        marker in error_text.upper()
-        for marker in ('503', 'UNAVAILABLE', '500', 'INTERNAL', '502', '504')
+        marker in error_text
+        for marker in (
+            '503',
+            'UNAVAILABLE',
+            '500',
+            'INTERNAL',
+            '502',
+            '504',
+        )
     )
 
 
@@ -67,6 +86,7 @@ def get_retry_delay(error_text):
 
     for pattern in patterns:
         match = re.search(pattern, error_text, re.IGNORECASE)
+
         if match:
             return max(1, float(match.group(1)))
 
@@ -75,15 +95,22 @@ def get_retry_delay(error_text):
 
 def extract_json(response_text):
     response_text = (response_text or '').strip()
+
     response_text = re.sub(
         r'^```(?:json)?\s*',
         '',
         response_text,
-        flags=re.IGNORECASE
+        flags=re.IGNORECASE,
     )
     response_text = re.sub(r'\s*```$', '', response_text)
 
-    return json.loads(response_text)
+    start = response_text.find('{')
+    end = response_text.rfind('}')
+
+    if start == -1 or end == -1 or end < start:
+        raise ValueError('В ответе Gemini не найден JSON.')
+
+    return json.loads(response_text[start:end + 1])
 
 
 def convert_condition_to_latex(condition, task_num):
@@ -103,48 +130,51 @@ def convert_condition_to_latex(condition, task_num):
 
 Правила:
 - Не решай задачу и не вычисляй ответ.
-- Не добавляй объяснений.
-- Не меняй числа и математический смысл.
-- Сохрани русский текст и математические формулы.
-- Не придумывай отсутствующие данные.
-- Верни только JSON:
+- Не добавляй объяснений и новых данных.
+- Не меняй числа, слова и математический смысл условия.
+- Сохрани весь русский текст условия.
+- Правильно записывай математические формулы в LaTeX.
+- Сохраняй индексы, степени, дроби, корни, векторы и обозначения точек.
+- Используй $...$ для математических выражений внутри текста.
+- Не удаляй части условия.
+- Верни только JSON такого вида:
 {{
     "condition_latex": "Условие в LaTeX"
 }}
 """
 
-    temporary_attempt = 0
     quota_attempt = 0
+    temporary_attempt = 0
 
     while True:
         try:
             response = client.models.generate_content(
                 model=MODEL_NAME,
-                contents=prompt
+                contents=prompt,
             )
 
         except Exception as error:
             error_text = str(error)
+
             if is_quota_error(error_text):
                 quota_attempt += 1
                 wait_seconds = get_retry_delay(error_text)
 
-                if wait_seconds > MAX_QUOTA_WAIT_SECONDS:
+                if (
+                    wait_seconds > MAX_QUOTA_WAIT_SECONDS
+                    or quota_attempt >= MAX_RETRIES
+                ):
                     raise QuotaWaitTooLong(
-                        f'Задание {task_num}: повтор через '
-                        f'{wait_seconds:g} сек. '
+                        f'Задание {task_num}: квота Gemini исчерпана. '
+                        f'Не буду ждать {wait_seconds:g} сек. '
+                        'Успешно обработанные задания сохранены в кэше. '
                         'Запусти программу позже.'
-                    ) from error
-
-                if quota_attempt >= MAX_RETRIES:
-                    raise QuotaWaitTooLong(
-                        f'Задание {task_num}: квота не восстановилась '
-                        f'после {quota_attempt} попыток.'
                     ) from error
 
                 print(
                     f'Квота Gemini исчерпана. '
-                    f'Повтор через {wait_seconds:g} сек.'
+                    f'Повтор через {wait_seconds:g} сек. '
+                    f'Попытка {quota_attempt}/{MAX_RETRIES}.'
                 )
                 time.sleep(wait_seconds + 1)
                 continue
@@ -152,25 +182,28 @@ def convert_condition_to_latex(condition, task_num):
             if is_temporary_error(error_text):
                 temporary_attempt += 1
 
-                if temporary_attempt < MAX_RETRIES:
-                    wait_seconds = temporary_attempt * 5
+                if temporary_attempt >= MAX_RETRIES:
                     print(
-                        f'Временная ошибка. Повтор через {wait_seconds} сек.'
+                        f'Задание {task_num}: сервер недоступен после '
+                        f'{temporary_attempt} попыток. '
+                        'Оставляю исходное условие.'
                     )
-                    time.sleep(wait_seconds)
-                    continue
+                    return condition
+
+                wait_seconds = temporary_attempt * 5
 
                 print(
-                    f'Задание {task_num}: сервер недоступен. '
-                    'Оставляю исходное условие.'
+                    f'Временная ошибка. Повтор через {wait_seconds} сек. '
+                    f'Попытка {temporary_attempt}/{MAX_RETRIES}.'
                 )
-                return condition
+                time.sleep(wait_seconds)
+                continue
 
             raise
 
         try:
             data = extract_json(response.text)
-        except (json.JSONDecodeError, TypeError) as error:
+        except (json.JSONDecodeError, TypeError, ValueError) as error:
             print(f'Ошибка JSON в задании {task_num}: {error}')
             return condition
 
@@ -185,10 +218,13 @@ def convert_condition_to_latex(condition, task_num):
             return condition
 
         condition_latex = condition_latex.strip()
+
+        # Сохраняем результат сразу после успешной обработки.
         latex_cache[cache_key] = condition_latex
         save_cache()
 
         print(f'Задание {task_num}: LaTeX сохранён в кэш.')
+
         return condition_latex
 
 

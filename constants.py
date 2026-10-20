@@ -25,7 +25,7 @@ ZIP_PATH = BASE_DIR / 'result.zip'
 CACHE_PATH = DATA_DIR / 'latex_cache.json'
 
 
-MODEL_NAME = 'gemini-3.7-flash'
+MODEL_NAME = 'gemini-3.4-flash'
 MAX_RETRIES = 3
 MAX_QUOTA_WAIT_SECONDS = 300
 DEFAULT_RETRY_SECONDS = 10
