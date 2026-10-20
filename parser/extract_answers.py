@@ -172,21 +172,13 @@ def extract_answers():
         finally:
             browser.close()
 
-    # Сохраняем первую часть до обращения к Gemini.
     save_answers(answers)
-
     print(f'Получено ответов с сайта: {len(answers)}')
     print('Ответы сохранены в answers.json.')
-
-    # Получаем ответы для заданий 13–19.
     image_answers = extract_image_answers()
-
-    # Сохраняем вторую часть и объединяем её с первой.
     answers.update(image_answers)
     save_answers(answers)
-
     print(f'Всего получено ответов за этот запуск: {len(answers)}')
-
     for task_num in sorted(answers):
         print(f'Задание {task_num}: {answers[task_num]}')
 

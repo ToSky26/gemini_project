@@ -122,18 +122,14 @@ def extract_images(document):
     for page_number, page in enumerate(document, start=1):
         images_by_page[page_number] = []
         task_areas = find_task_areas(page)
-
         for image_info in page.get_image_info(xrefs=True):
             xref = image_info.get('xref', 0)
-
             if not xref:
                 continue
-
             bbox = tuple(image_info['bbox'])
             task_num = find_image_task(bbox, task_areas, page.rect.width)
             if task_num is None:
                 continue
-
             try:
                 image_data = document.extract_image(xref)
                 image = Image.open(

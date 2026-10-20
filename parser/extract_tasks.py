@@ -86,8 +86,7 @@ def save_task(tasks_by_number, task_num, lines, page_number, images_by_page):
             image['name']
             for image in images_by_page.get(page_number, [])
             if image.get('task_num') == task_num
-        ),
-        '',
+        ), '',
     )
 
     task = {

@@ -170,7 +170,6 @@ def convert_condition_to_latex(condition, task_num):
                         'Успешно обработанные задания сохранены в кэше. '
                         'Запусти программу позже.'
                     ) from error
-
                 print(
                     f'Квота Gemini исчерпана. '
                     f'Повтор через {wait_seconds:g} сек. '
@@ -189,18 +188,14 @@ def convert_condition_to_latex(condition, task_num):
                         'Оставляю исходное условие.'
                     )
                     return condition
-
                 wait_seconds = temporary_attempt * 5
-
                 print(
                     f'Временная ошибка. Повтор через {wait_seconds} сек. '
                     f'Попытка {temporary_attempt}/{MAX_RETRIES}.'
                 )
                 time.sleep(wait_seconds)
                 continue
-
             raise
-
         try:
             data = extract_json(response.text)
         except (json.JSONDecodeError, TypeError, ValueError) as error:
@@ -218,13 +213,9 @@ def convert_condition_to_latex(condition, task_num):
             return condition
 
         condition_latex = condition_latex.strip()
-
-        # Сохраняем результат сразу после успешной обработки.
         latex_cache[cache_key] = condition_latex
         save_cache()
-
         print(f'Задание {task_num}: LaTeX сохранён в кэш.')
-
         return condition_latex
 
 
