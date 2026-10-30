@@ -1,22 +1,11 @@
-import json
 import os
-import re
 import time
 
 from dotenv import load_dotenv
 from google import genai
+from google.genai import errors, types
 
-from constants import (
-    MODEL_NAME,
-    CACHE_PATH,
-    MAX_RETRIES,
-    MAX_QUOTA_WAIT_SECONDS,
-    DEFAULT_RETRY_SECONDS,
-)
-
-
-class QuotaWaitTooLong(Exception):
-    pass
+from constants import MODEL_POOL, DEFAULT_RETRY_SECONDS
 
 
 load_dotenv()
@@ -27,196 +16,34 @@ if not api_key:
     raise ValueError('Добавь GEMINI_API_KEY в файл .env')
 
 client = genai.Client(api_key=api_key)
-latex_cache = {}
 
 
-def load_cache():
-    global latex_cache
-
-    if not CACHE_PATH.exists():
-        latex_cache = {}
-        return
-
-    try:
-        data = json.loads(CACHE_PATH.read_text(encoding='utf-8'))
-        latex_cache = data if isinstance(data, dict) else {}
-    except (json.JSONDecodeError, OSError) as error:
-        print(f'Не удалось прочитать кэш: {error}')
-        latex_cache = {}
+class QuotaWaitTooLong(Exception):
+    pass
 
 
-def save_cache():
-    CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-    temp_path = CACHE_PATH.with_suffix('.tmp')
-    temp_path.write_text(
-        json.dumps(latex_cache, ensure_ascii=False, indent=4),
-        encoding='utf-8',
-    )
-    temp_path.replace(CACHE_PATH)
-
-
-def is_quota_error(error_text):
-    error_text = error_text.upper()
-    return '429' in error_text or 'RESOURCE_EXHAUSTED' in error_text
-
-
-def is_temporary_error(error_text):
-    error_text = error_text.upper()
-
-    return any(
-        marker in error_text
-        for marker in (
-            '503',
-            'UNAVAILABLE',
-            '500',
-            'INTERNAL',
-            '502',
-            '504',
-        )
-    )
-
-
-def get_retry_delay(error_text):
-    patterns = [
-        r'retry in\s+(\d+(?:\.\d+)?)\s*s(?:ec(?:onds?)?)?',
-        r'Please retry in\s+(\d+(?:\.\d+)?)\s*seconds?',
-        r'retryDelay["\']?\s*:\s*["\']?(\d+(?:\.\d+)?)s',
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, error_text, re.IGNORECASE)
-
-        if match:
-            return max(1, float(match.group(1)))
-
-    return DEFAULT_RETRY_SECONDS
-
-
-def extract_json(response_text):
-    response_text = (response_text or '').strip()
-
-    response_text = re.sub(
-        r'^```(?:json)?\s*',
-        '',
-        response_text,
-        flags=re.IGNORECASE,
-    )
-    response_text = re.sub(r'\s*```$', '', response_text)
-
-    start = response_text.find('{')
-    end = response_text.rfind('}')
-
-    if start == -1 or end == -1 or end < start:
-        raise ValueError('В ответе Gemini не найден JSON.')
-
-    return json.loads(response_text[start:end + 1])
-
-
-def convert_condition_to_latex(condition, task_num):
-    cache_key = f'{task_num}:{condition}'
-
-    if cache_key in latex_cache:
-        print(f'Задание {task_num}: использую кэш.')
-        return latex_cache[cache_key]
-
-    prompt = f"""
-Преобразуй условие задания ЕГЭ по математике в LaTeX.
-
-Номер задания: {task_num}
-
-Исходное условие:
-{condition}
-
-Правила:
-- Не решай задачу и не вычисляй ответ.
-- Не добавляй объяснений и новых данных.
-- Не меняй числа, слова и математический смысл условия.
-- Сохрани весь русский текст условия.
-- Правильно записывай математические формулы в LaTeX.
-- Сохраняй индексы, степени, дроби, корни, векторы и обозначения точек.
-- Используй $...$ для математических выражений внутри текста.
-- Не удаляй части условия.
-- Верни только JSON такого вида:
-{{
-    "condition_latex": "Условие в LaTeX"
-}}
-"""
-
-    quota_attempt = 0
-    temporary_attempt = 0
-
-    while True:
+def generate_with_fallback(contents):
+    for model_name in MODEL_POOL:
         try:
+            print(f'  Пробуем модель: {model_name}')
+
             response = client.models.generate_content(
-                model=MODEL_NAME,
-                contents=prompt,
+                model=model_name,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    response_mime_type='application/json'
+                ),
             )
 
+            print(f'  Ответ получен от {model_name}')
+            return response
+
+        except (errors.ServerError, errors.APIError) as error:
+            print(f'  Модель {model_name} не сработала: {error}')
+            time.sleep(DEFAULT_RETRY_SECONDS)
+
         except Exception as error:
-            error_text = str(error)
+            print(f'  Ошибка модели {model_name}: {error}')
+            time.sleep(DEFAULT_RETRY_SECONDS)
 
-            if is_quota_error(error_text):
-                quota_attempt += 1
-                wait_seconds = get_retry_delay(error_text)
-
-                if (
-                    wait_seconds > MAX_QUOTA_WAIT_SECONDS
-                    or quota_attempt >= MAX_RETRIES
-                ):
-                    raise QuotaWaitTooLong(
-                        f'Задание {task_num}: квота Gemini исчерпана. '
-                        f'Не буду ждать {wait_seconds:g} сек. '
-                        'Успешно обработанные задания сохранены в кэше. '
-                        'Запусти программу позже.'
-                    ) from error
-                print(
-                    f'Квота Gemini исчерпана. '
-                    f'Повтор через {wait_seconds:g} сек. '
-                    f'Попытка {quota_attempt}/{MAX_RETRIES}.'
-                )
-                time.sleep(wait_seconds + 1)
-                continue
-
-            if is_temporary_error(error_text):
-                temporary_attempt += 1
-
-                if temporary_attempt >= MAX_RETRIES:
-                    print(
-                        f'Задание {task_num}: сервер недоступен после '
-                        f'{temporary_attempt} попыток. '
-                        'Оставляю исходное условие.'
-                    )
-                    return condition
-                wait_seconds = temporary_attempt * 5
-                print(
-                    f'Временная ошибка. Повтор через {wait_seconds} сек. '
-                    f'Попытка {temporary_attempt}/{MAX_RETRIES}.'
-                )
-                time.sleep(wait_seconds)
-                continue
-            raise
-        try:
-            data = extract_json(response.text)
-        except (json.JSONDecodeError, TypeError, ValueError) as error:
-            print(f'Ошибка JSON в задании {task_num}: {error}')
-            return condition
-
-        if not isinstance(data, dict):
-            print(f'Задание {task_num}: ожидался JSON-объект.')
-            return condition
-
-        condition_latex = data.get('condition_latex')
-
-        if not isinstance(condition_latex, str) or not condition_latex.strip():
-            print(f'Задание {task_num}: пустой или неверный результат.')
-            return condition
-
-        condition_latex = condition_latex.strip()
-        latex_cache[cache_key] = condition_latex
-        save_cache()
-        print(f'Задание {task_num}: LaTeX сохранён в кэш.')
-        return condition_latex
-
-
-load_cache()
+    raise RuntimeError('Не удалось получить ответ ни от одной модели.')

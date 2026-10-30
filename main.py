@@ -1,96 +1,58 @@
-import json
-
-from constants import BASE_DIR, EXCEL_PATH
+from constants import PDF_PATH
 from parser.download_pdf import download_pdf
 from parser.pdf_parser import parse_pdf
 from parser.extract_answers import extract_answers
 from parser.excel_export import create_excel
 from parser.archiver import create_zip
-from parser.gemini import QuotaWaitTooLong
-
-
-ANSWERS_PATH = BASE_DIR / 'answers.json'
-
-
-def load_answers():
-    if not ANSWERS_PATH.exists():
-        return {}
-
-    try:
-        return json.loads(ANSWERS_PATH.read_text(encoding='utf-8'))
-    except (json.JSONDecodeError, OSError) as error:
-        print(f'Не удалось прочитать сохранённые ответы: {error}')
-        return {}
-
-
-def save_answers(answers):
-    saved_answers = load_answers()
-
-    saved_answers.update({
-        str(task_num): answer
-        for task_num, answer in answers.items()
-    })
-
-    ANSWERS_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-    temp_path = ANSWERS_PATH.with_suffix('.tmp')
-    temp_path.write_text(
-        json.dumps(saved_answers, ensure_ascii=False, indent=4),
-        encoding='utf-8',
-    )
-    temp_path.replace(ANSWERS_PATH)
+from parser.classify_tasks import classify_tasks
 
 
 def main():
+    print('Шаг 1. Скачиваю PDF...')
+
+    pdf_path = download_pdf()
+
+    if not pdf_path:
+        pdf_path = PDF_PATH
+
+    print('\nШаг 2. Извлекаю ответы...')
+
     try:
-        print('Шаг 1. Получаю ответы...')
-        answers = load_answers()
+        extract_answers()
+    except Exception as error:
+        print(f'Не удалось получить ответы: {error}')
+        print('Продолжаю обработку заданий.')
 
-        if len(answers) >= 19:
-            print('Использую ранее сохранённые ответы.')
-        else:
-            try:
-                new_answers = extract_answers()
-                save_answers(new_answers)
-                answers.update(load_answers())
-                print('Ответы сохранены.')
-            except QuotaWaitTooLong as error:
-                print(f'\n{error}')
-                answers = load_answers()
-                print('Продолжаю с ранее сохранёнными ответами.')
+    print('\nШаг 3. Распознаю задания и чертежи...')
 
-        print('Шаг 2. Загружаю PDF...')
-        pdf_path = download_pdf()
+    tasks = parse_pdf(pdf_path)
 
-        print('Шаг 3. Извлекаю задания и изображения...')
-        tasks = parse_pdf(pdf_path)
+    if not tasks:
+        raise RuntimeError(
+            'Не удалось извлечь ни одного задания из PDF.'
+        )
+
+    print('\nШаг 4. Определяю экзамены и темы...')
+
+    try:
+        tasks = classify_tasks(tasks)
+    except Exception as error:
+        print(f'Не удалось классифицировать задания: {error}')
+        print('Продолжаю без ID экзаменов и тем.')
 
         for task in tasks:
-            task_num = task['task_num']
-            task['answer'] = answers.get(
-                str(task_num),
-                answers.get(task_num, ''),
-            )
+            task['exams_id'] = None
+            task['topics_id'] = None
 
-        print('Шаг 4. Создаю Excel...')
-        try:
-            create_excel(tasks)
-        except QuotaWaitTooLong as error:
-            print(f'\n{error}')
-            print('Excel сохранён с доступными результатами.')
+    print('\nШаг 5. Создаю Excel...')
 
-        print('Шаг 5. Создаю ZIP-архив...')
-        if EXCEL_PATH.exists():
-            create_zip()
-        else:
-            print('Excel не создан, поэтому ZIP пропущен.')
+    create_excel(tasks)
 
-        print('Обработка завершена!')
+    print('\nШаг 6. Создаю ZIP-архив...')
 
-    except QuotaWaitTooLong as error:
-        print(f'\n{error}')
-        print('Уже обработанные условия сохранены в кэше.')
-        print('Ответы сохранены в answers.json, если их удалось получить.')
+    create_zip()
+
+    print('\nОбработка завершена!')
 
 
 if __name__ == '__main__':
