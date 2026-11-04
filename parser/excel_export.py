@@ -1,5 +1,6 @@
 import json
 from datetime import date
+import re
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
@@ -13,6 +14,20 @@ from constants import (
     YEAR,
 )
 from parser.latex_cleaner import clean_latex
+
+
+def format_condition(condition):
+    if not condition:
+        return condition
+
+    condition = re.sub(
+        r'\s*([АБВГДЕЖЗ])\s*\)',
+        r'<br>\1)',
+        condition,
+        flags=re.IGNORECASE
+    )
+
+    return condition.strip()
 
 
 def load_answers():
@@ -60,6 +75,7 @@ def create_excel(tasks):
             task.get('condition', ''),
             task_num,
         )
+        condition = format_condition(condition)
 
         tasks_sheet.append([
             task_num,
@@ -74,7 +90,6 @@ def create_excel(tasks):
     about_sheet = workbook.create_sheet('about')
 
     metadata = [
-        ['Метаданные', 'Значение'],
         ['Класс', CLASS_NUMBER],
         ['Год', YEAR],
         ['Дата создания', date.today().isoformat()],
@@ -86,8 +101,8 @@ def create_excel(tasks):
         ['Ссылка на источник', SOURCE_URL],
     ]
 
-    for row in metadata:
-        about_sheet.append(row)
+    for row in zip(*metadata):
+        about_sheet.append(list(row))
 
     header_font = Font(bold=True)
     body_alignment = Alignment(
@@ -120,8 +135,20 @@ def create_excel(tasks):
     tasks_sheet.row_dimensions[1].height = 30
     tasks_sheet.freeze_panes = 'A2'
 
-    about_sheet.column_dimensions['A'].width = 24
-    about_sheet.column_dimensions['B'].width = 65
+    about_column_widths = {
+        'A': 12,
+        'B': 12,
+        'C': 18,
+        'D': 12,
+        'E': 12,
+        'F': 35,
+        'G': 25,
+        'H': 15,
+        'I': 65,
+    }
+
+    for column, width in about_column_widths.items():
+        about_sheet.column_dimensions[column].width = width
 
     EXCEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(EXCEL_PATH)

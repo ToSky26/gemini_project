@@ -37,12 +37,8 @@ def main():
     try:
         tasks = classify_tasks(tasks)
     except Exception as error:
-        print(f'Не удалось классифицировать задания: {error}')
-        print('Продолжаю без ID экзаменов и тем.')
-
-        for task in tasks:
-            task['exams_id'] = None
-            task['topics_id'] = None
+        print(f'Ошибка классификации: {error}')
+        raise
 
     print('\nШаг 5. Создаю Excel...')
 

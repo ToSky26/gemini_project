@@ -29,6 +29,57 @@ def normalize_task_num(value):
         return str(int(float(value)))
     except (TypeError, ValueError):
         return str(value).strip()
+    
+
+def get_leaf_ids(df, id_column, parent_column):
+    parent_ids = {
+        to_int(value)
+        for value in df[parent_column]
+        if to_int(value) is not None
+    }
+
+    return {
+        to_int(value)
+        for value in df[id_column]
+        if to_int(value) is not None
+        and to_int(value) not in parent_ids
+    }
+
+
+def build_leaf_catalog(df, id_column, name_column, parent_column):
+    rows = {}
+
+    for _, row in df.iterrows():
+        item_id = to_int(row[id_column])
+
+        if item_id is not None:
+            rows[item_id] = {
+                'name': str(row[name_column]).strip(),
+                'parent': to_int(row[parent_column]),
+            }
+
+    leaf_ids = get_leaf_ids(df, id_column, parent_column)
+    catalog = []
+
+    for leaf_id in sorted(leaf_ids):
+        path = []
+        current_id = leaf_id
+        visited = set()
+
+        while current_id in rows and current_id not in visited:
+            visited.add(current_id)
+            path.append(rows[current_id]['name'])
+            current_id = rows[current_id]['parent']
+
+        path.reverse()
+
+        catalog.append({
+            'id': leaf_id,
+            'name': rows[leaf_id]['name'],
+            'path': ' → '.join(path),
+        })
+
+    return catalog, leaf_ids
 
 
 def load_catalogs():
@@ -106,7 +157,6 @@ def parse_json_response(text):
 
     return json.loads(text[start:end + 1])
 
-
 def classify_tasks(tasks):
     if not tasks:
         return tasks
@@ -115,24 +165,19 @@ def classify_tasks(tasks):
 
     exams, topics, math_exams = load_catalogs()
 
-    exam_catalog = [
-        {
-            'id': to_int(row['id']),
-            'name': str(row['name_of_Exam']),
-        }
-        for _, row in math_exams.iterrows()
-        if to_int(row['id']) is not None
-    ]
+    exam_catalog, leaf_exam_ids = build_leaf_catalog(
+        math_exams,
+        'id',
+        'name_of_Exam',
+        'parent_of_exam',
+    )
 
-    topic_catalog = [
-        {
-            'id': to_int(row['id']),
-            'name': str(row['name']),
-            'parent': to_int(row['parent']),
-        }
-        for _, row in topics.iterrows()
-        if to_int(row['id']) is not None
-    ]
+    topic_catalog, leaf_topic_ids = build_leaf_catalog(
+        topics,
+        'id',
+        'name',
+        'parent',
+    )
 
     task_catalog = [
         {
@@ -142,26 +187,67 @@ def classify_tasks(tasks):
         for task in tasks
     ]
 
-    prompt = f'''
-Ты классифицируешь задания варианта ЕГЭ по профильной математике.
+    valid_exam_ids = leaf_exam_ids
+    valid_topic_ids = leaf_topic_ids
+
+    def make_prompt(tasks_to_classify, correction_info=None):
+        correction_text = ''
+
+        if correction_info:
+            correction_text = f'''
+ПРЕДЫДУЩАЯ ПОПЫТКА СОДЕРЖАЛА ОШИБКИ.
+
+Исправь классификацию следующих заданий.
+Причины ошибок:
+{json.dumps(correction_info, ensure_ascii=False)}
+
+Не повторяй предыдущие ошибки.
+Для каждого задания обязательно выбери оба ID.
+'''
+
+        return f'''
+Ты — эксперт по классификации заданий ЕГЭ по профильной математике.
 
 Для каждого задания выбери:
-- exams_id — один подходящий ID из каталога экзаменов;
-- topics_id — один подходящий ID из каталога тем.
+- exams_id — одну конечную категорию из каталога экзаменов;
+- topics_id — одну конечную категорию из каталога тем.
 
-Правила:
-1. Используй исключительно ID из переданных каталогов.
-2. Не придумывай ID.
-3. Для каждого задания обязательно постарайся подобрать наиболее подходящую тему.
-4. Если задание содержит несколько математических разделов,
-   выбирай тему, которая отражает основной метод решения.
-5. Не выбирай слишком общую тему, если есть более точная.
-6. Если точного совпадения нет, выбирай ближайшую по смыслу тему.
-7. Не возвращай null только из-за сложности условия.
-8. Сохраняй исходный task_num.
-9. Не изменяй условия заданий.
+ОСНОВНЫЕ ПРАВИЛА:
 
-Формат ответа:
+1. Внимательно изучи полное условие каждого задания.
+2. Определи, какие математические знания и методы
+   необходимы для решения.
+3. Выбирай тему по математическому содержанию и методу
+   решения, а не только по словам из условия.
+4. Учитывай весь путь категории в каталоге:
+   родительские разделы помогают определить контекст темы.
+5. Выбирай наиболее подходящую конечную категорию.
+6. Не выбирай общие, родительские или промежуточные категории.
+7. Если точного соответствия нет, выбери наиболее близкую
+   по математическому содержанию и методу решения конечную тему.
+8. Не выбирай случайную тему только ради заполнения поля.
+   Сначала сравни все подходящие конечные категории.
+9. Используй исключительно ID из переданных каталогов.
+10. Не придумывай ID.
+11. Для каждого задания обязательно верни ровно один
+    exams_id и ровно один topics_id.
+12. Не возвращай null, пустые строки или пропущенные поля.
+13. Сохраняй исходный task_num.
+14. Не изменяй условия заданий.
+15. Подпункты А), Б), В) одного задания рассматривай
+    как одно задание и присваивай ему одну тему.
+
+ПЕРЕД ВЫБОРОМ topics_id:
+- Сравни условие задания с названиями конечных тем.
+- Учитывай математический метод, необходимый для решения.
+- Проверь, какая конечная тема наиболее точно описывает
+  именно этот метод.
+- Не ограничивайся первым подходящим совпадением.
+
+{correction_text}
+
+ФОРМАТ ОТВЕТА — СТРОГО JSON:
+
 {{
     "tasks": [
         {{
@@ -179,76 +265,154 @@ def classify_tasks(tasks):
 {json.dumps(topic_catalog, ensure_ascii=False)}
 
 ЗАДАНИЯ:
-{json.dumps(task_catalog, ensure_ascii=False)}
+{json.dumps(tasks_to_classify, ensure_ascii=False)}
 '''
 
-    print(f'Отправляю Gemini {len(tasks)} заданий...')
+    def request_classification(tasks_to_classify, correction_info=None):
+        prompt = make_prompt(tasks_to_classify, correction_info)
+        response = generate_with_fallback([prompt])
 
-    response = generate_with_fallback([prompt])
-    result = parse_json_response(response_to_text(response))
+        result = parse_json_response(response_to_text(response))
 
-    if not isinstance(result, dict) or not isinstance(
-        result.get('tasks'), list
-    ):
-        raise ValueError('Gemini вернул JSON неправильной структуры')
+        if not isinstance(result, dict) or not isinstance(
+            result.get('tasks'), list
+        ):
+            raise ValueError('Gemini вернул JSON неправильной структуры')
 
-    returned_by_num = {}
+        return result['tasks']
 
-    for item in result['tasks']:
-        if not isinstance(item, dict):
-            continue
+    def validate_response(tasks_to_classify, response_items):
+        expected_nums = {
+            normalize_task_num(task.get('task_num'))
+            for task in tasks_to_classify
+        }
 
-        task_num = normalize_task_num(item.get('task_num'))
+        returned_by_num = {}
+        duplicate_nums = set()
 
-        if not task_num:
-            continue
+        for item in response_items:
+            if not isinstance(item, dict):
+                continue
 
-        if task_num in returned_by_num:
-            returned_by_num[task_num] = None
-        else:
-            returned_by_num[task_num] = item
+            task_num = normalize_task_num(item.get('task_num'))
 
-    valid_exam_ids = {
-        to_int(value)
-        for value in math_exams['id']
-        if to_int(value) is not None
-    }
+            if task_num not in expected_nums:
+                continue
 
-    valid_topic_ids = {
-        to_int(value)
-        for value in topics['id']
-        if to_int(value) is not None
-    }
+            if task_num in returned_by_num:
+                duplicate_nums.add(task_num)
+            else:
+                returned_by_num[task_num] = item
 
-    matched = 0
+        valid_results = {}
+        errors = {}
+
+        for task in tasks_to_classify:
+            task_num = normalize_task_num(task.get('task_num'))
+
+            if task_num in duplicate_nums:
+                errors[task_num] = 'Gemini вернул задание несколько раз'
+                continue
+
+            item = returned_by_num.get(task_num)
+
+            if item is None:
+                errors[task_num] = 'Задание отсутствует в ответе Gemini'
+                continue
+
+            exam_id = to_int(item.get('exams_id'))
+            topic_id = to_int(item.get('topics_id'))
+
+            if exam_id not in valid_exam_ids:
+                errors[task_num] = (
+                    f'Некорректный или не конечный exams_id: {exam_id}'
+                )
+                continue
+
+            if topic_id not in valid_topic_ids:
+                errors[task_num] = (
+                    f'Некорректный или не конечный topics_id: {topic_id}'
+                )
+                continue
+
+            valid_results[task_num] = {
+                'exams_id': exam_id,
+                'topics_id': topic_id,
+            }
+
+        return valid_results, errors
+
+    print(f'Отправляю Gemini {len(tasks)} заданий (попытка 1 из 2)...')
+
+    try:
+        first_response = request_classification(task_catalog)
+        valid_results, errors = validate_response(
+            task_catalog,
+            first_response,
+        )
+    except Exception as error:
+        print(f'Первая попытка классификации не удалась: {error}')
+
+        valid_results = {}
+        errors = {
+            normalize_task_num(task.get('task_num')):
+                'Не удалось обработать первый ответ Gemini'
+            for task in tasks
+        }
+
+    if errors:
+        retry_tasks = [
+            task for task in task_catalog
+            if normalize_task_num(task.get('task_num')) in errors
+        ]
+
+        print(
+            f'Найдены ошибки в {len(retry_tasks)} заданиях. '
+            f'Отправляю их на исправление (попытка 2 из 2)...'
+        )
+
+        try:
+            second_response = request_classification(
+                retry_tasks,
+                errors,
+            )
+
+            second_valid, second_errors = validate_response(
+                retry_tasks,
+                second_response,
+            )
+
+            valid_results.update(second_valid)
+            errors = second_errors
+
+        except Exception as error:
+            print(f'Вторая попытка классификации не удалась: {error}')
 
     for task in tasks:
         task_num = normalize_task_num(task.get('task_num'))
-        item = returned_by_num.get(task_num)
+        result = valid_results.get(task_num)
 
-        if not isinstance(item, dict):
+        if result:
+            task['exams_id'] = result['exams_id']
+            task['topics_id'] = result['topics_id']
+        else:
             task['exams_id'] = None
             task['topics_id'] = None
-            continue
 
-        exam_id = to_int(item.get('exams_id'))
-        topic_id = to_int(item.get('topics_id'))
-
-        task['exams_id'] = (
-            exam_id if exam_id in valid_exam_ids else None
+    if errors:
+        error_details = '\n'.join(
+            f'Задание {task_num}: {reason}'
+            for task_num, reason in errors.items()
         )
 
-        task['topics_id'] = (
-            topic_id if topic_id in valid_topic_ids else None
+        raise RuntimeError(
+            'Не удалось классифицировать все задания '
+            'за две попытки:\n' + error_details
         )
-
-        if task['exams_id'] is not None or task['topics_id'] is not None:
-            matched += 1
 
     print(
         f'Классификация завершена. '
-        f'Получены ID для {matched} '
-        f'из {len(tasks)} заданий.'
+        f'Получены оба ID для всех {len(tasks)} заданий.'
     )
 
     return tasks

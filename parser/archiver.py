@@ -26,7 +26,7 @@ def create_zip():
                 if image_path.is_file():
                     archive.write(
                         image_path,
-                        arcname=f'images/{image_path.name}',
+                        arcname=image_path.name,
                     )
 
     print(f'Архив создан: {ZIP_PATH}')

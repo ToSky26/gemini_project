@@ -1,11 +1,10 @@
 import os
-import time
 
 from dotenv import load_dotenv
 from google import genai
 from google.genai import errors, types
 
-from constants import MODEL_POOL, DEFAULT_RETRY_SECONDS
+from constants import MODEL_POOL
 
 
 load_dotenv()
@@ -38,12 +37,14 @@ def generate_with_fallback(contents):
             print(f'  Ответ получен от {model_name}')
             return response
 
-        except (errors.ServerError, errors.APIError) as error:
+        except errors.APIError as error:
             print(f'  Модель {model_name} не сработала: {error}')
-            time.sleep(DEFAULT_RETRY_SECONDS)
+            continue
 
         except Exception as error:
             print(f'  Ошибка модели {model_name}: {error}')
-            time.sleep(DEFAULT_RETRY_SECONDS)
+            continue
 
-    raise RuntimeError('Не удалось получить ответ ни от одной модели.')
+    raise RuntimeError(
+        'Не удалось получить ответ ни от одной модели.'
+    )
